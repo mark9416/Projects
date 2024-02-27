@@ -1,0 +1,806 @@
+---
+title: "STAT627_HCV_final_project"
+author: "Yu Chieh Cheng, Chien Hsiao, He Jin Chu"
+date: "2023-11-24"
+output: word_document
+---
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(readr)
+library(fastDummies)
+library(lme4) 
+library(glmnet)
+library(arm)
+library(class)
+library(FNN) 
+library(MASS)
+library(tree)
+library(bootstrap)
+library(randomForest)
+library(caret)
+library(boot)
+library(kernlab)
+```
+
+
+```{r}
+#Import dataset
+hcvdat1 <- read_csv("hcvdat.csv")
+hcvdat1 <- na.omit(hcvdat1)
+hcvdat1 <- hcvdat1[,-1]
+hcvdat1
+```
+
+
+#Explanation of varibales
+-Category: 0 means Blood Donor, 1 means suspect Blood Donor, 2 means Hepatitis, 3 means Fibrosis, 4 means Cirrhosis
+-Age: Blood donors' age
+-Sex: female(f) or male(m)
+-ALB: Albumin
+-ALP: Alkaline Phosphatase
+-AST: Aspartate Aminotransferase
+-BIL: Bilirubin
+-CHE: Cholinesterase
+-CHOL: Cholesterol
+-CREA: Creatinine
+-GGT: Gamma-Glutamyltransferase
+-PROT: Proteins
+-ALT: Alanine Aminotransferase
+
+```{r}
+#Add Status variable
+#Convert sex into dummy varaible
+hcvdat1 <- dummy_cols(hcvdat1, select_columns = c("Sex"), remove_selected_columns = TRUE)
+
+#Convert categorical variables
+for (i in 1:nrow(hcvdat1)) {
+  if (hcvdat1$Category[i] == "0=Blood Donor") {
+    hcvdat1$Status[i] <- 0
+  } else
+    hcvdat1$Status[i] <- 1
+}
+hcvdat1
+```
+
+```{r warning=FALSE, message=FALSE}
+#Check potential multicollinearity
+GGally::ggpairs(hcvdat1)
+```
+
+```{r}
+hcvdat1nnn <- hcvdat1[,-1]
+M = cor(hcvdat1nnn)
+corrplot(M)
+```
+
+# Classification
+# Analysis Method:
+
+1) Logistic Regression
+
+```{r warning=FALSE}
+hcvdatnoc <- hcvdat1[,-1]
+set.seed(1234)
+training_pct <- 0.6
+Z <- sample(nrow(hcvdatnoc), floor(training_pct*nrow(hcvdatnoc)))
+
+test_lrdata <- hcvdatnoc[-Z,]
+
+logreg <- glm(as.factor(Status) ~ ., data = hcvdatnoc[Z,], family = "binomial")
+summary(logreg)
+```
+
+```{r}
+plot(logreg)
+```
+
+```{r warning=FALSE}
+Prob <- predict(logreg, type = "response")
+
+threshold <- seq(0, 1, .01)
+length(threshold)
+
+head(threshold)
+
+TPR <-  FPR <- err.rate <- rep(0, length(threshold))
+
+for (i in seq_along(threshold)) {
+Yhat <- rep(NA_character_, nrow(hcvdatnoc[Z,])) 
+Yhat <-  ifelse(Prob >= threshold[[i]], "0", "1")
+
+err.rate[i] <- mean(Yhat != hcvdatnoc[Z,]$Status)
+TPR[[i]] <- sum(Yhat == "0" & hcvdatnoc[Z,]$Status == "0") /
+  sum(hcvdatnoc[Z,]$Status == "0")
+FPR[[i]] <- sum(Yhat == "0" & hcvdatnoc[Z,]$Status == "1") /
+  sum(hcvdatnoc[Z,]$Status == "1")
+}
+
+ggplot(tibble(threshold, err.rate),
+       aes(threshold, err.rate)) + 
+  geom_point()
+```
+
+```{r}
+table(hcvdatnoc[Z,]$Status)
+```
+
+```{r}
+#accuracy rate
+mean(hcvdatnoc[Z,]$Status== "0") # healthy
+
+#error rate
+min(err.rate)
+```
+
+#Logistic Regression (k-fold=10)
+```{r warning=FALSE, message=FALSE}
+#Logistic Regression (k-fold=10)
+
+set.seed(1234)
+folds <- createFolds(hcvdatnoc$Status, k = 10, list = TRUE)
+
+# Initialize an empty data frame to store results
+results <- data.frame(fold = integer(0), AIC = numeric(0))
+
+# k-fold cross-validation
+for(i in seq_along(folds)) {
+  # Splitting the data
+  train_data <- hcvdatnoc[-folds[[i]],]
+  test_data <- hcvdatnoc[folds[[i]],]
+  
+  # Fit logistic regression model
+  model <- glm(as.factor(Status) ~ ., data = train_data, family = "binomial")
+  
+  # Store results
+  results <- rbind(results, data.frame(fold = i, AIC = AIC(model)))
+}
+
+# Averaging AIC
+mean_aic <- mean(results$AIC)
+mean_aic
+
+# Now, use lasso regularization to find the optimal number of parameters
+x <- model.matrix(as.factor(Status) ~ ., hcvdatnoc)
+y <- hcvdat1$Status
+
+cvfit <- cv.glmnet(x, y, family = "binomial", alpha = 1) # alpha = 1 for LASSO
+cvfit
+```
+```{r}
+# Best lambda
+best_lambda <- cvfit$lambda.min
+
+# Fit final model with best lambda
+final_model <- glmnet(x, y, family = "binomial", lambda = best_lambda)
+
+# Extract coefficients
+coef(final_model)
+```
+
+
+```{r}
+final_model <- glmnet(x, y, family = "binomial", lambda = best_lambda)
+
+
+test_matrix <- model.matrix(~., test_data)[, -1]   
+
+
+predicted_probabilities <- predict(final_model, newx = test_matrix, s = best_lambda, type = "response")
+
+
+predicted_classes <- ifelse(predicted_probabilities > 0.5, 1, 0)
+
+
+predicted_classes <- factor(predicted_classes, levels = c("0", "1")) 
+actual_classes <- factor(test_data$Status, levels = c("0", "1"))   
+
+
+error_rate <- mean(predicted_classes != actual_classes)
+accuracy_rate <- 1 - error_rate  
+
+
+error_rate
+
+accuracy_rate
+```
+
+ - We got the accuracy rate 93.22% with selected parameters(ALB, ALP, ALT, AST, BIL, CHOL, CREA, GGT).
+ 
+ 
+ 
+# Here we create the data to use some methods that can use "Category" to be our dependent directly, rather than use the "Status".
+
+```{r message=FALSE,warning=FALSE}
+#convert Category variable content to 0 to 4 
+
+hcvdat2 <- read_csv("hcvdat.csv")
+hcvdat2 <- na.omit(hcvdat2)
+hcvdat2 <- dummy_cols(hcvdat2, select_columns = c("Sex"), remove_selected_columns = TRUE)
+
+for (i in 1:nrow(hcvdat2)) {
+  if (hcvdat2$Category[i] == "0=Blood Donor") {
+    hcvdat2$Category[i] <- 0
+  } else if (hcvdat2$Category[i] == "0s=suspect Blood Donor") {
+    hcvdat2$Category[i] <- 1
+  } else if (hcvdat2$Category[i] == "1=Hepatitis") {
+    hcvdat2$Category[i] <- 2
+  } else if (hcvdat2$Category[i] == "2=Fibrosis") {
+    hcvdat2$Category[i] <- 3
+  } else if (hcvdat2$Category[i] == "3=Cirrhosis") {
+    hcvdat2$Category[i] <- 4
+  }
+}
+hcvdat2 <- hcvdat2[,-1]
+hcvdat2
+```
+
+
+2-1) Linear Discriminant Analysis(LDA)
+# Use hcvdatnoc (dependent variable : Status 0,1)
+
+```{r warning=FALSE, message=FALSE}
+#LDA model
+LDA.results <- lda(Status ~ ., data = hcvdatnoc)
+LDA.results
+```
+
+```{r}
+table(hcvdatnoc$Status)/ nrow(hcvdatnoc)
+```
+
+```{r warning=FALSE}
+#LDA Cross Validation 
+LDA.cv.results <- lda(Status ~ ., CV=TRUE, data = hcvdatnoc)
+LDA.cv.results
+```
+ 
+```{r}
+set.seed(1234)
+data.frame(LDA.cv.results$posterior, LDA.cv.results$class) |>
+  slice_sample(n=10)
+```
+
+```{r warning=FALSE, message=FALSE}
+#split into training and testing
+set.seed(1234)
+index_1 <- sample(nrow(hcvdatnoc), 0.6*nrow(hcvdatnoc))
+train_lda <- hcvdatnoc[index_1,]
+test_lda <- hcvdatnoc[-index_1,]
+```
+
+
+```{r warning=FALSE}
+lda_out <- lda(Status ~ ., data = train_lda)
+
+predicted.lda <- predict(lda_out, data.frame(test_lda))$class
+
+table(test_lda$Status, predicted.lda)
+```
+
+```{r}
+# Classification Rate
+round(mean(test_lda$Status == predicted.lda), 3) 
+round(mean(predicted.lda == "1"), 3)
+round(mean(test_lda$Status == "1"), 3)
+```
+
+-> The first line of code calculates the proportion of predictions that the model classifies as category "1", which, at 0.076, indicates that approximately 7.6% of predictions fall into this category. The second line determines the actual proportion of category "1" in the dataset, which is about 10.2% as indicated by the result of 0.102.
+
+```{r warning=FALSE}
+lda_model <- lda(Status ~ ., data = train_lda)
+predictions <- predict(lda_model, test_lda)
+accuracy <- sum(predictions$class == test_lda$Status) / nrow(test_lda)
+
+
+set.seed(1234) 
+train_control <- trainControl(method = "cv", number = 10) 
+
+hcvdatnoc$Status <- as.factor(hcvdatnoc$Status)
+lda_cv_model <- train(Status ~ ., data = hcvdatnoc, method = "lda", trControl = train_control)
+lda_cv_model
+```
+
+ -  After cross-validation, LDA's accuracy rate = 95.42%
+ 
+
+2-2) Linear Discriminant Analysis(LDA)
+# Use hcvdat2 (dependent variable : Category 0 ~ 4)
+
+```{r warning=FALSE, message=FALSE}
+set.seed(1234)
+s <- sample(nrow(hcvdat2),0.6*nrow(hcvdat2))
+LDA.results <- lda(Category ~ ., data = hcvdat2[s,])
+Predicted_lda <- predict(LDA.results, data.frame(hcvdat2[-s,]))$class
+mean(hcvdat2[-s,]$Category == Predicted_lda)
+```
+
+
+3-1) Classification Trees
+# Use hcvdat1 (dependent variable : Status 0,1)
+```{r}
+set.seed(1234)
+z <- sample(nrow(hcvdat1),0.6*nrow(hcvdat1))
+tree2 <- tree(as.factor(Status) ~ .-Category ,data = hcvdat1[z,])
+tree2
+plot(tree2,type = "uniform")
+text(tree2)
+```
+
+```{r}
+summary(tree2)
+```
+
+ - $Accuracy rate = 1- 0.01983 = 0.98017$
+ - We got the accuracy rate 98.02% with selected parameters(AST, ALT, CHE, ALB).
+
+```{r}
+treehat2 = predict(tree2, newdata = hcvdat1[-z,],type = "class")
+summary(treehat2)
+mean(treehat2 != hcvdat1$Status[-z])
+```
+
+```{r}
+set.seed(1234)
+cv_m2 <- cv.tree(tree2, FUN = prune.misclass)
+cv_m2
+```
+
+```{r}
+plot(cv_m2)
+cv_m2$size[which.min(cv_m2$dev)]
+```
+
+```{r}
+tr_opt_m2 <- prune.misclass(tree2, best = 5)
+plot(tr_opt_m2,type = "uniform")
+text(tr_opt_m2)
+```
+
+```{r}
+summary(tr_opt_m2)
+```
+
+ - $Accuracy rate = 1- 0.02966102 = 0.970339$
+ - We got the accuracy rate 97.03% with selected parameters(AST, ALT).
+
+```{r}
+treehatm2 = predict(tr_opt_m2, newdata = hcvdat1[-z,],type = "class")
+summary(treehatm2)
+mean(treehatm2 != hcvdat1$Status[-z])
+```
+
+
+3-2) Classification Trees
+#Use hcvdat2 (dependent variable : Category 0 ~ 4)
+
+```{r}
+set.seed(1234)
+s <- sample(nrow(hcvdat2),0.6*nrow(hcvdat2))
+tree1 <- tree(as.factor(Category) ~ .,data = hcvdat2[s,])
+plot(tree1,type = "uniform")
+text(tree1)
+```
+
+```{r}
+summary(tree1)
+```
+
+ - $Accuracy rate = 1- 0.03683 = 0.96317$
+ - We got the accuracy rate 96.17% with selected parameters(ALT, ALB, AST, ALP, GGT).
+
+```{r}
+treehat = predict(tree1, newdata = hcvdat2[-s,],type = "class")
+summary(treehat)
+mean(treehat != hcvdat2$Category[-s])
+```
+
+```{r}
+set.seed(1234)
+cv_m <- cv.tree(tree1, FUN = prune.misclass)
+cv_m
+```
+
+```{r}
+plot(cv_m)
+cv_m$size[which.min(cv_m$dev)]
+```
+
+```{r}
+tr_opt_m <- prune.misclass(tree1, best = 6)
+plot(tr_opt_m)
+text(tr_opt_m)
+```
+
+```{r}
+summary(tr_opt_m)
+```
+
+ - $Accuracy rate = 1- 0.0720339 = 0.9279661$
+ - We got the accuracy rate 92.79% with selected parameters(ALT, ALB, AST, ALP).
+
+```{r}
+treehatm = predict(tr_opt_m, newdata = hcvdat2[-s,],type = "class")
+summary(treehatm)
+mean(treehatm != hcvdat2$Category[-s])
+```
+
+4-1) Random Forests
+# Use hcvdat1 (dependent variable : Status 0,1)
+
+```{r}
+set.seed(1234)
+rf_model <- randomForest(as.factor(Status) ~ . - Category, data=hcvdat1[z,])
+rf_model
+```
+
+```{r}
+rf_predictions <- predict(rf_model, newdata=hcvdat1[-z,])
+mean(rf_predictions == hcvdat1$Status[-z])
+```
+
+```{r}
+ntree_values <- seq(100, 1000, by=100)
+
+accuracy_values <- numeric(length(ntree_values))
+
+set.seed(1234)
+for (i in seq_along(ntree_values)) {
+  rf_model <- randomForest(as.factor(Status) ~ . - Category, data=hcvdat1[z,], ntree=ntree_values[i])
+  
+  predictions <- predict(rf_model, newdata=hcvdat1[-z,])
+  
+  accuracy_values[i] <- mean(predictions == hcvdat1$Status[-z])
+}
+# find best tree
+best_ntree <- ntree_values[which.max(accuracy_values)]
+best_ntree
+```
+
+```{r}
+set.seed(1234)
+rf_model1 <- randomForest(as.factor(Status) ~ . - Category, data=hcvdat1[z,], ntree=200)
+rf_model1
+```
+
+```{r}
+rf_predictions1 <- predict(rf_model1, newdata=hcvdat1[-z,])
+mean(rf_predictions1 == hcvdat1$Status[-z])
+```
+
+```{r}
+importance(rf_model)
+```
+
+ - We got the accuracy rate 97.88%.
+
+
+5-1) Support Vector Machine
+#Use hcv (dependent variable : Category 0 ~ 4)
+
+```{r}
+set.seed(1234)
+hcv <- read_csv("hcvdat.csv")
+hcv <- na.omit(hcv)
+hcv <- hcv[,-1]
+
+hcv <- dummy_cols(hcv, select_columns = c("Sex"), remove_selected_columns = TRUE)
+hcv$Category <-as.factor(hcv$Category)
+```
+
+```{r}
+library(e1071)
+SVM <- svm(Category ~ ., data = hcv)
+SVM
+```
+
+```{r}
+SVM_l <- svm(Category ~ ., data = hcv, 
+           kernel = "linear") 
+SVM_l
+```
+
+```{r warning=FALSE}
+SVM_r <- svm(Category ~ ., data = hcv,
+           kernel = "radial")
+SVM_r
+```
+
+```{r}
+SVM_p <- svm(Category ~ ., data = hcv,
+           kernel = "polynomial")
+SVM_p
+```
+
+```{r}
+SVM_s <- svm(Category ~ ., data = hcv,
+           kernel = "sigmoid")
+SVM_s
+```
+
+```{r}
+Yhat <- predict(SVM)
+table(Yhat, hcv$Category)
+```
+
+```{r}
+Yhat_l <- predict(SVM_l)
+table(Yhat_l, hcv$Category)
+```
+
+```{r}
+Yhat_r <- predict(SVM_r)
+table(Yhat, hcv$Category)
+```
+
+```{r}
+Yhat_p <- predict(SVM_p)
+table(Yhat, hcv$Category)
+```
+
+```{r}
+Yhat_s <- predict(SVM_s)
+table(Yhat, hcv$Category)
+```
+
+```{r}
+mean(Yhat == hcv$Category)
+mean(Yhat_l == hcv$Category)
+mean(Yhat_r == hcv$Category)
+mean(Yhat_p == hcv$Category)
+mean(Yhat_s == hcv$Category)
+```
+
+```{r}
+set.seed(1234)
+SVM_best <- tune(svm, as.factor(Category) ~ ., data = hcv,
+              ranges = list(cost = seq(.1, 3.0, 0.1), 
+                            kernel = c("linear", "polynomial", "radial",
+                                       "sigmoid")))
+
+summary(SVM_best)
+```
+
+```{r}
+set.seed(1234)
+SVMtuning <- tune(svm, as.factor(Category) ~ ., data = hcv,
+                  ranges = list(kernel = c("linear",
+                                            "polynomial", "radial", "sigmoid")))
+
+summary(SVMtuning)
+```
+
+```{r}
+SVM_best_linear <- svm(Category ~ ., data = hcv, kernel = "linear", cost =  .3)
+summary(SVM_best_linear)
+```
+
+```{r}
+set.seed(1234)
+if (!require(kernlab)) install.packages('kernlab', dependencies = TRUE)
+
+trainControl <- trainControl(method = "cv", number = 10)
+
+grid <- expand.grid(C = c(0.1, 0.3, 0.5, 1, 2))
+
+
+svmModel <- train(Category ~ ., data = hcv,
+                  method = "svmLinear",
+                  trControl = trainControl,
+                  tuneGrid = grid)
+
+svmModel
+
+```
+
+ - The final value used for the model was C = 0.3 with accuracy rate is 95.75%.
+
+5-2) Support Vector Machine
+# Use hcvdatnoc_svm (dependent variable : Status 0,1)
+
+```{r}
+hcvdatnoc_svm <-hcvdatnoc[,-1]
+```
+
+```{r}
+SVM_s <- svm(Status ~ ., data = hcvdatnoc_svm)
+SVM_s
+```
+
+```{r}
+SVM_ls <- svm(Status ~ ., data = hcvdatnoc_svm, 
+           kernel = "linear") 
+SVM_ls
+```
+
+```{r}
+SVM_rs <- svm(Status ~ ., data = hcvdatnoc_svm,
+           kernel = "radial")
+SVM_rs
+```
+
+```{r}
+SVM_ps <- svm(Status ~ ., data = hcvdatnoc_svm,
+           kernel = "polynomial")
+SVM_ps
+```
+
+```{r}
+SVM_ss <- svm(Status ~ ., data = hcvdatnoc_svm,
+           kernel = "sigmoid")
+SVM_ss
+```
+
+```{r}
+Yhat_s <- predict(SVM_s)
+table(Yhat_s, hcvdatnoc_svm$Status)
+
+Yhat_ls <- predict(SVM_ls)
+table(Yhat_ls, hcvdatnoc_svm$Status)
+
+Yhat_rs <- predict(SVM_rs)
+table(Yhat_rs, hcvdatnoc_svm$Status)
+
+Yhat_ps <- predict(SVM_ps)
+table(Yhat_ps, hcvdatnoc_svm$Status)
+
+Yhat_ss <- predict(SVM_ss)
+table(Yhat_ss, hcvdatnoc_svm$Status)
+```
+```{r}
+mean(Yhat_s == hcvdatnoc_svm$Status)
+mean(Yhat_ls == hcvdatnoc_svm$Status)
+mean(Yhat_rs == hcvdatnoc_svm$Status)
+mean(Yhat_ps == hcvdatnoc_svm$Status)
+mean(Yhat_ss == hcvdatnoc_svm$Status)
+```
+
+```{r}
+set.seed(1234)
+SVM_bests <- tune(svm, Status ~ ., data = hcvdatnoc_svm,
+              ranges = list(cost = seq(.1, 3.0, 0.1), 
+                            kernel = c("linear", "polynomial", "radial",
+                                       "sigmoid")))
+
+summary(SVM_bests)
+```
+
+```{r}
+1 - SVM_bests$performances[SVM_bests$performances$error == min(SVM_bests$performances$error),]$error
+```
+
+```{r}
+set.seed(1234)
+SVMtunings <- tune(svm, Status ~ ., data = hcvdatnoc_svm,
+                  ranges = list(kernel = c("linear",
+                                            "polynomial", "radial", "sigmoid")))
+
+summary(SVMtunings)
+```
+
+```{r}
+SVM_best_radial <- svm(Status ~ ., data = hcvdatnoc_svm, kernel = "radial", cost =  2.5)
+summary(SVM_best_radial)
+```
+
+ - The final value used for the model was cost = 2.5 with accuracy rate is 98.98%.
+
+
+#Conclusion:
+
+ - For analysis classification results for this Hepatitis C Virus data, we know the best method to predict Hepatitis C is the Support vector machine because it has the highest accuracy rate. 
+ 
+ - The model from the support vector machine has a high accuracy rate of around 99%, it might be overfitting. It might be because our sample size is small( around 600 observations).
+ 
+ - In addition, case-wise deletion for handling missing values may lead to the loss of some important information.
+ 
+ 
+--------------------------------------------------------------------------
+
+# Linear Regression
+
+```{r message=FALSE,warning=FALSE}
+hcvdat.linear <- read_csv("hcvdat.csv")
+hcvdat.linear <- na.omit(hcvdat.linear)
+hcvdat.linear <- hcvdat.linear[,-1]
+head(hcvdat.linear)
+```
+
+# We change Category cloumn into dummy variables so that we can run for the linear regression later.
+
+```{r}
+hcvdat_dummies <- dummy_cols(hcvdat.linear, select_columns = "Category", remove_first_dummy = TRUE)
+head(hcvdat_dummies)
+```
+
+# Full Linear Regression
+
+```{r}
+full.linear.rg <- lm(Age ~ . -Category, data = hcvdat_dummies)
+summary(full.linear.rg)
+```
+ - Based on the summary, we could know that ALP, ALT, CHOL, PROT, and Category_1=Hepatitis p-value are under 0.05, which is significant to the model. And we will utilize these significant variables and create a reduced regression model.
+
+ - In the summary, the adjusted r-squared is 0.1157, which means we can only explain in Age about 11.57% of the data.
+
+
+
+# Reduced Regression Model
+
+ - The best model is $Age=62.177489+0.062009*ALP-0.049214*ALT+1.39058*CHOL-0.010491*CREA-0.336144*PROT-4.44875*`Category_1=Hepatitis`$
+
+ - The reduced model adjusted r-square is 0.08398 meaning that this model only can explained 8.398% of the data.
+
+```{r}
+reduce.linear.rg <- lm(Age ~ ALP + ALT + CHOL + CREA + PROT + `Category_1=Hepatitis`, data = hcvdat_dummies)
+summary(reduce.linear.rg)
+```
+
+ - A few outliers are common, but a systematic pattern in the residuals or significant deviations from normality (as suggested by the tails in the QQ plot) could mean that the linear regression assumptions are violated, and the model might not be the best fit for the data.
+
+```{r}
+plot(reduce.linear.rg)
+```
+
+
+#Ridge Regression
+
+```{r}
+ridge.linear <- lm.ridge(Age ~ .-Category, data = hcvdat_dummies)
+ridge.linear
+```
+
+```{r}
+set.seed(1234)
+x <- model.matrix(Age ~ . - 1, data = hcvdat_dummies)  # -1 to exclude the intercept
+y <- hcvdat_dummies$Age
+
+cv_model <- cv.glmnet(x, y, alpha = 0, 
+                      nfolds = 10) 
+best_lambda <- cv_model$lambda.min
+print(best_lambda)
+```
+
+ - We can find the best lambda for Ridge Regression is 5.400454.
+
+```{r}
+ridge.linear.lambda <- lm.ridge(Age ~ .-Category, data = hcvdat_dummies, lambda = 1)
+ridge.linear.lambda
+```
+
+```{r}
+plot(cv_model)
+```
+
+```{r}
+ridge.final_model <- glmnet(x, y, alpha = 0, lambda = best_lambda)
+ridge.final_model
+```
+
+# Lasso Ridge
+
+```{r}
+set.seed(1234)
+x <- model.matrix(Age ~ . - 1, data = hcvdat_dummies)  # -1 to exclude the intercept
+y <- hcvdat_dummies$Age
+```
+
+```{r}
+cv_lasso <- cv.glmnet(x, y, alpha = 1, 
+                      nfolds = 10) 
+
+best_lambda_lasso <- cv_lasso$lambda.min
+print(best_lambda_lasso)
+```
+
+ - We can find the best lambda for Lasoo Regression is 0.2949878.
+ 
+```{r}
+plot(cv_lasso)
+```
+
+```{r}
+final_lasso_model <- glmnet(x, y, alpha = 1, lambda = best_lambda_lasso)
+final_lasso_model
+```
+

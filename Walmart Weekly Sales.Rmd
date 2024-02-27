@@ -1,0 +1,138 @@
+---
+title: "Project"
+author: "HeJin"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r}
+library(tidyverse)
+library(arm)
+library(lme4)
+```
+Data Input
+```{r}
+walmart<-read.csv("Walmart.csv",header = TRUE)
+summary(walmart)
+```
+Data Cleaning
+```{r}
+walmart$Store <- as.factor(walmart$Store)
+walmart$Holiday_Flag <- as.factor(walmart$Holiday_Flag)
+walmart$Date <- as.Date(walmart$Date,format = "%m-%d-%Y")
+walmart <- na.omit(walmart)
+glimpse(walmart)
+```
+
+Sale and Store
+```{r}
+Sale.Store <- lmer(Weekly_Sales ~ 1 + (1|Store),data = walmart)
+display(Sale.Store)
+```
+Sale and Date
+```{r}
+Sale.Date <- lmer(Weekly_Sales ~ Date + (1|Store), data = walmart)
+display(Sale.Date)
+```
+
+
+Sale and Holiday
+```{r}
+Sale.Holiday <- lmer(Weekly_Sales ~ Holiday_Flag + (1|Store), data = walmart)
+display(Sale.Holiday)
+```
+Sale and Temperature & Fuel
+```{r}
+Sale.Temp.Fuel <- lmer(Weekly_Sales ~ Temperature + Fuel_Price + (1|Store), data = walmart)
+display(Sale.Temp.Fuel)
+```
+Sale and CPI & Unemployment
+```{r}
+Sale.CPI.Unemployment <- lmer(Weekly_Sales ~ CPI + Unemployment + (1|Store), data = walmart)
+display(Sale.CPI.Unemployment)
+```
+
+All variables
+```{r}
+Sale.Store.full <- lmer(Weekly_Sales ~ Date + Holiday_Flag + Temperature + Fuel_Price + CPI + Unemployment + (1|Store), data = walmart)
+display(Sale.Store.full)
+```
+
+```{r}
+aic_values <- c(AIC(Sale.Store),AIC(Sale.Date),AIC(Sale.Holiday),
+                AIC(Sale.Temp.Fuel),AIC(Sale.CPI.Unemployment),AIC(Sale.Store.full))
+models_aic <- data.frame(Model = c("Sale.Store","Sale.Date","Sale.Holiday",                                   
+                                   "Sale.Temp.Fuel","Sale.CPI.Unemployment","Sale.Store.full"),
+                         AIC = aic_values)
+print(models_aic)
+```
+
+
+```{r}
+summary(Sale.Store.full)
+```
+
+```{r}
+Date.Store.full <- lmer(Weekly_Sales ~ Date + Holiday_Flag + Temperature + Fuel_Price + CPI + Unemployment
+                        + (1 + Date|Store), data = walmart)
+display(Date.Store.full)
+```
+
+```{r}
+Holiday.Store.full <- lmer(Weekly_Sales ~ Date + Holiday_Flag + Temperature + Fuel_Price + CPI + Unemployment
+                           + (1 + Date + Holiday_Flag|Store), data = walmart)
+display(Holiday.Store.full)
+```
+
+```{r}
+Temp.Fuel.Store.full <- lmer(Weekly_Sales ~ Date + Holiday_Flag + Temperature + Fuel_Price + CPI + Unemployment
+                           + (1 + Date + Holiday_Flag + Temperature + Fuel_Price|Store), data = walmart)
+display(Temp.Fuel.Store.full)
+```
+
+```{r}
+All.full <- lmer(Weekly_Sales ~ Date + Holiday_Flag + Temperature + Fuel_Price + CPI + Unemployment
+                 +(1+Date+Holiday_Flag+Temperature+Fuel_Price+CPI+Unemployment|Store), data = walmart)
+display(All.full)
+```
+```{r}
+aic_values2 <- c(AIC(Date.Store.full),AIC(Holiday.Store.full),AIC(Temp.Fuel.Store.full),AIC(All.full))
+models_aic2 <- data.frame(Model = c("Date.Store.full","Holiday.Store.full","Temp.Fuel.Store.full","All.full"),
+                         AIC = aic_values2)
+print(models_aic2)
+```
+
+```{r}
+summary(All.full)
+```
+
+```{r}
+ranef(All.full)$Store
+```
+
+
+Graph
+```{r}
+est1 <- coef(Sale.Store)$Store[,1]
+SE1 <- se.ranef(Sale.Store)$Store[,1]
+est2 <- coef(Sale.Store.full)$Store[,1]
+SE2 <- se.ranef(Sale.Store.full)$Store[,1]
+plot.df1 <- data.frame(ID = rep(1:length(est1), 2),
+                       Model = c(rep("Sale.Store", length(est1)),rep("Sale.Store.Full", length(est2))),
+                       Estimate = c(est1, est2),SE = c(SE1, SE2))
+a.hat <- data.frame(Model = c("Sale.Store", "Sale.Store.Full"),
+a.hat = c(fixef(Sale.Store)["(Intercept)"], fixef(Sale.Store.full)["(Intercept)"]))
+interval1 <- -qnorm((1-0.95)/2)
+interval2 <- -qnorm((1-0.99)/2)
+ggplot(data = plot.df1) +
+  geom_hline(data = a.hat, aes(yintercept = a.hat), linetype = "twodash",colour = "red", size = 1) +
+  geom_line(aes(x = ID, y = Estimate)) +
+  geom_linerange(aes(x = ID, ymin = Estimate - SE*interval1,ymax = Estimate + SE*interval1),
+                 position = position_dodge(width = 2/3),alpha = 0.75, lwd = 0.75, show.legend=FALSE) +
+  geom_pointrange(aes(x = ID, y = Estimate, ymin = Estimate - SE*interval2,ymax = Estimate + SE*interval2),
+                  position = position_dodge(width = 2/3),alpha = 0.75, lwd = 0.45, shape = 21)+
+  labs(x = " ", y = "Estimated Regression Intercept", 
+       title = "The random effect of Sale.Store and Sale.Store.Full") +
+  theme(plot.title = element_text(size = 12))+
+  facet_wrap(~Model)
+```

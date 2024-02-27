@@ -1,0 +1,175 @@
+---
+title: "620 project2"
+author: "ChuehHsien Luo"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r}
+library(tidyverse)
+library(FNN)
+library(readr)
+library(ggplot2)
+library(dplyr)
+library(cluster)
+library(factoextra)
+library(FactoMineR)
+library(ggdendro)
+library(tree)
+da <- read_csv("diabetes.csv")
+danew <- read_csv("diabetes.new.csv")
+head(10,data=da)
+```
+
+# Find missing value
+```{r}
+is.na(da)
+complete.cases(da)
+```
+
+# Data summary
+```{r}
+summary(da)
+```
+
+# Histogram
+```{r}
+hist(da$Glucose)
+hist(da$BloodPressure)
+hist(da$SkinThickness)
+hist(da$Pregnancies)
+hist(da$Insulin)
+hist(da$BMI)
+hist(da$DiabetesPedigreeFunction)
+hist(da$Age)
+```
+
+# Boxplot
+```{r}
+boxplot(da$Glucose)
+boxplot(da$BloodPressure)
+boxplot(da$SkinThickness)
+boxplot(da$Pregnancies)
+boxplot(da$Insulin)
+boxplot(da$BMI)
+boxplot(da$DiabetesPedigreeFunction)
+boxplot(da$Age)
+```
+
+#corrlation
+```{r}
+cor(da)
+```
+#Mutipiple Linear Regression
+```{r}
+da.reg <- lm(Outcome~.,data=da)
+summary(da.reg)
+```
+
+# Normaliaztion
+```{r}
+unscale <- function (vals, norm.data, col.ids)
+{
+  cols <- if (missing(col.ids))
+    1:NCOL(vals)
+  else col.ids
+  if (length(cols) != NCOL(vals))
+    stop("Incorrect dimension of data to unscale.")
+  centers <- attr(norm.data, "scaled:center")[cols]
+  scales <- attr(norm.data, "scaled:scale")[cols]
+  unvals <- scale(vals, center = (-centers/scales), scale = 1/scales)
+  attr(unvals, "scaled:center") <- attr(unvals, "scaled:scale") <- NULL
+  unvals
+}
+```
+
+```{r}
+da.norm <- scale(da)
+da.norm
+set.seed(12345)
+```
+
+
+
+
+#knn
+```{r}
+da <- as.data.frame(da)
+set.seed(12345)
+training <- sample(1:nrow(da), 0.6*nrow(da))
+ycol <- match('Outcome',colnames(da))
+da.training <- da[training,-ycol]
+da.training.results <- da[training,ycol] > 0.5
+da.test <- da[-training,-ycol]
+da.test.results <- da[-training,ycol] > 0.5
+
+da.training.norm <- scale(da.training)
+da.test.norm <- scale(da.test,center=attr(da.training.norm,"scaled:center")[1:ncol(da.test)],scale=attr(da.training.norm,"scaled:scale")[1:ncol(da.test)])
+
+da.knn <- knn.reg(da.training, da.test, da.training.results, k=5)
+da.knn <- knn(da.training.norm, da.test.norm, da.training.results, k=100) 
+sum(da.knn == da.test.results) / length(da.test.results)  #accuracy rate
+table(da.knn, da.test.results)   #confusion matrix
+```
+
+#KNN predict
+```{r}
+danew.norm <- scale(danew, center=attr(da.training.norm,"scaled:center")[1:ncol(danew)],scale=attr(da.training.norm,"scaled:scale")[1:ncol(danew)])
+da.knn.new <- knn.reg(da.training.norm, danew.norm, da.training.results, k=100)
+da.knn.new$pred
+```
+
+
+#Logestic regression
+```{r}
+da.lr <- glm(Outcome ~ ., family=binomial(link='logit'),data=da[training,])
+summary(da.lr)
+```
+
+```{r}
+da.test.probabilities <- predict(da.lr,da.test,type = "response")
+da.lr.classifications <- round(da.test.probabilities,0)
+sum(da.lr.classifications == da.test.results) / length(da.test.results) #accuracy rate
+table(da.lr.classifications,da.test.results)   #confusion matrix
+```
+
+#Logestic regression predict
+```{r}
+round(predict(da.lr,danew,type="response"),2)
+```
+
+
+#classification tree
+```{r}
+set.seed(12345)
+training <- sample(1:nrow(da), 0.6*nrow(da))
+ycol <- match('Outcome',colnames(da))
+da.training <- da[training,-ycol]
+da.training.results <- da[training,ycol] > 0.5
+da.test <- da[-training,-ycol]
+da.test.results <- da[-training,ycol] > 0.5
+da.tree <- tree(Outcome ~ ., data=da[training,])
+plot(da.tree)
+text(da.tree)
+da.tree <- tree(Outcome ~ ., data=da[training,], mindev=0.001)
+plot(da.tree)
+text(da.tree, cex=0.6)
+da.tree.proportions <- predict(da.tree,da[-training,])
+da.tree.classifications <- round(da.tree.proportions,0)
+sum(da.tree.classifications == da.test.results) / nrow(da[-training,]) #accuracy rate
+table(da.tree.classifications, da.test.results)   #confusion matrix
+```
+
+
+#Classification Tree predict
+```{r}
+predict(da.tree,danew)
+```
+
+#prediction of KNN, Logistic Regression, and Classification Tree
+```{r}
+da.knn.new <- knn.reg(da.training.norm, danew.norm, da.training.results, k=100)
+da.knn.new$pred
+round(predict(da.lr,danew,type="response"),2)
+predict(da.tree,danew)
+```
